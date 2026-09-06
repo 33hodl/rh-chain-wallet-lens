@@ -374,7 +374,10 @@ async function crawlOnce(addr,onPage){
       if(!j2)break;
       if((j2.items?.length||0)>(j.items?.length||0))j=j2;else break;
     }
-    const items=(j.items||[]).filter(i=>i&&String(i.token_type||i.token?.type)==="ERC-20"&&i.token&&i.token.symbol&&i.total&&i.total.value);
+    // Keep ALL ERC-20 rows — even ones the flaky server serialized without
+    // `total` (dropping them punched silent holes mid-history). classifyHistory
+    // tolerates missing totals (leg contributes 0); a fuller re-fetch restores it.
+    const items=(j.items||[]).filter(i=>i&&String(i.token_type||i.token?.type)==="ERC-20"&&i.token&&i.token.symbol&&i.token.address_hash);
     rows=rows.concat(items);
     onPage(page,rows.length);
     next=j?.next_page_params||null;
@@ -398,8 +401,10 @@ function classifyHistory(legs,addr){
     groups.get(h).push(leg);
   }
   const book={},stats={deposits:0,withdrawals:0,unclassified:0,lp:0,transfers:0,swaps:0};
-  const tokKey=l=>String(l.token.symbol||"?").toUpperCase()+"|"+String(l.token.address_hash||"").toLowerCase();
+  const legQty=l=>{if(!l||!l.total)return 0;return bigNum(l.total.value,l.token.decimals);};
+  const tokKey=l=>String(l.token.symbol||"?")+"|"+String(l.token.address_hash||"").toLowerCase();
   const legVal=l=>{
+    if(!l||!l.total)return 0;
     const sym=String(l.token.symbol||"");
     if(STABLES.has(sym))return bigNum(l.total.value,l.token.decimals);
     if(sym==="WETH")return bigNum(l.total.value,l.token.decimals)*ethPrice;
@@ -421,13 +426,13 @@ function classifyHistory(legs,addr){
         const proceeds=inVal-outVal;
         for(const l of outTok){
           const k=tokKey(l);if(!book[k])book[k]=newBook(l);
-          sellTok(book[k],bigNum(l.total.value,l.token.decimals),proceeds/(outTok.length||1),l);
+          sellTok(book[k],legQty(l),proceeds/(outTok.length||1),l);
         }
       }else if(inTok.length&&!outTok.length&&outVal>inVal){ // BUY: token in, stables out (net)
         const cost=outVal-inVal;
         for(const l of inTok){
           const k=tokKey(l);if(!book[k])book[k]=newBook(l);
-          buyTok(book[k],bigNum(l.total.value,l.token.decimals),cost/(inTok.length||1),l);
+          buyTok(book[k],legQty(l),cost/(inTok.length||1),l);
         }
       }else if(outTok.length&&inTok.length){stats.swaps++;} // true token↔token swap: unpriced
       else stats.unclassified++;
@@ -448,7 +453,7 @@ function classifyHistory(legs,addr){
       const stable=outs.filter(l=>STABLES.has(l.token.symbol)||l.token.symbol==="WETH");
       const toks=outs.filter(l=>!(STABLES.has(l.token.symbol)||l.token.symbol==="WETH"));
       const toLp=isLpHolder(gl[0].to?.hash);
-      if(toks.length&&toLp){stats.lp++;stats.transfers++;for(const l of toks){const k=tokKey(l);if(book[k])lpOut(book[k],bigNum(l.total.value,l.token.decimals));}}
+      if(toks.length&&toLp){stats.lp++;stats.transfers++;for(const l of toks){const k=tokKey(l);if(book[k])lpOut(book[k],legQty(l));}}
       else if(stable.length===outs.length&&toLp){stats.lp++;stats.transfers++;} // LP add in stables only
       else if(stable.length===outs.length&&!toLp){stats.withdrawals+=stable.reduce((s,l)=>s+legVal(l),0);}
       else if(toks.length){stats.transfers++;}
