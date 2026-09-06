@@ -350,14 +350,25 @@ async function crawlOnce(addr,onPage){
   let page=1,next=null,rows=[],failed=false;
   const t0=Date.now();
   while(page<=TT_PAGE_MAX&&Date.now()-t0<TT_BUDGET_MS){
-    let q="/addresses/"+addr+"/token-transfers";
-    if(next){const sp=new URLSearchParams();for(const k of Object.keys(next))sp.set(k,next[k]);q+="?"+sp.toString();}
-    let j=null,ok=false;
-    for(let t=0;t<=TT_RETRIES&&!ok;t++){
-      try{j=await bsJson(q,1,15000);ok=true;}catch(e){if(t<TT_RETRIES)await delay(1600*(t+1));}
+    const pageUrl="/addresses/"+addr+"/token-transfers"+(next?("?"+new URLSearchParams(next).toString()):"");
+    async function fetchOnce(){
+      for(let t=0;t<=TT_RETRIES;t++){
+        try{const jj=await bsJson(pageUrl,1,18000);if(jj&&Array.isArray(jj.items))return jj;}catch(e){}
+        if(t<TT_RETRIES)await delay(1800*(t+1));
+      }
+      return null;
     }
-    if(!ok){failed=true;break;}
-    const items=(j?.items||[]).filter(i=>i&&String(i.token_type||i.token?.type)==="ERC-20"&&i.token&&i.token.symbol&&i.total&&i.total.value);
+    let j=await fetchOnce();
+    if(!j){failed=true;break;}
+    // Confirmation refetches: the explorer sometimes returns a TRUNCATED short
+    // page with next_page_params=null (silent data loss — the oldest rows just
+    // vanish). While a page looks short, refetch and keep the fullest response.
+    for(let c=0;c<2&&(j.items?.length||0)<50;c++){
+      const j2=await fetchOnce();
+      if(!j2)break;
+      if((j2.items?.length||0)>(j.items?.length||0))j=j2;else break;
+    }
+    const items=(j.items||[]).filter(i=>i&&String(i.token_type||i.token?.type)==="ERC-20"&&i.token&&i.token.symbol&&i.total&&i.total.value);
     rows=rows.concat(items);
     onPage(page,rows.length);
     next=j?.next_page_params||null;
@@ -380,7 +391,7 @@ function classifyHistory(legs,addr){
     if(!groups.has(h))groups.set(h,[]);
     groups.get(h).push(leg);
   }
-  const book={},stats={deposits:0,withdrawals:0,unclassified:0,lp:0,transfers:0};
+  const book={},stats={deposits:0,withdrawals:0,unclassified:0,lp:0,transfers:0,swaps:0};
   const tokKey=l=>String(l.token.symbol||"?").toUpperCase()+"|"+String(l.token.address_hash||"").toLowerCase();
   const legVal=l=>{
     const sym=String(l.token.symbol||"");
@@ -398,17 +409,22 @@ function classifyHistory(legs,addr){
       const inTok=ins.filter(l=>!(STABLES.has(l.token.symbol)||l.token.symbol==="WETH"));
       const outTok=outs.filter(l=>!(STABLES.has(l.token.symbol)||l.token.symbol==="WETH"));
       const inVal=inStable.reduce((s,l)=>s+legVal(l),0),outVal=outStable.reduce((s,l)=>s+legVal(l),0);
-      if(outTok.length&&!inTok.length&&inVal>0&&outStable.length===0){
+      // Residue-tolerant: routers often leave dust/refund legs of the opposite
+      // stable side in the same tx (a buy with a small USDG change-back leg, etc).
+      if(outTok.length&&!inTok.length&&inVal>outVal){ // SELL: token out, stables in (net)
+        const proceeds=inVal-outVal;
         for(const l of outTok){
           const k=tokKey(l);if(!book[k])book[k]=newBook(l);
-          sellTok(book[k],bigNum(l.total.value,l.token.decimals),inVal/(outTok.length||1),l);
+          sellTok(book[k],bigNum(l.total.value,l.token.decimals),proceeds/(outTok.length||1),l);
         }
-      }else if(inTok.length&&!outTok.length&&outVal>0&&inStable.length===0){
+      }else if(inTok.length&&!outTok.length&&outVal>inVal){ // BUY: token in, stables out (net)
+        const cost=outVal-inVal;
         for(const l of inTok){
           const k=tokKey(l);if(!book[k])book[k]=newBook(l);
-          buyTok(book[k],bigNum(l.total.value,l.token.decimals),outVal/(inTok.length||1),l);
+          buyTok(book[k],bigNum(l.total.value,l.token.decimals),cost/(inTok.length||1),l);
         }
-      }else stats.unclassified++;
+      }else if(outTok.length&&inTok.length){stats.swaps++;} // true token↔token swap: unpriced
+      else stats.unclassified++;
       continue;
     }
     if(ins.length&&!outs.length){
@@ -524,10 +540,11 @@ function renderPnl(){
   body.innerHTML=h;
   const fine=$("pnlFine");
   const parts=[];
-  parts.push(d.transfers+" ERC-20 transfers scanned"+(windowed?" (newest ~"+d.transfers+" — wallet is deep; rescan window shows most recent activity)":""));
+  parts.push(d.transfers+" ERC-20 transfers scanned"+(windowed?" — stopped at the newest "+d.transfers+" (explorer limits/deep history); tap ↻ rescan for the full window":" — full history"));
   if(stats.lp)parts.push(stats.lp+" tx with LP/position-manager counterparties excluded (funds sit outside the wallet)");
   if(stats.transfers)parts.push(stats.transfers+" inbound/outbound transfers with no buy/sell leg (airdrops, gifts, LP moves) excluded from cost basis");
-  if(stats.unclassified)parts.push(stats.unclassified+" token↔token swaps not priced");
+  if(stats.swaps)parts.push(stats.swaps+" token↔token swaps not priced");
+  if(stats.unclassified)parts.push(stats.unclassified+" unusual txs skipped");
   parts.push("gas fees not included · received tokens carry $0 cost basis · stables priced at $1 · prices as of the live snapshot");
   fine.textContent=parts.join(" · ");
 }
