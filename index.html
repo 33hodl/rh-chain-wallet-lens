@@ -335,16 +335,22 @@ async function loadRisks(cas){
 }
 
 /* ---------------- cost-basis PnL engine (client-side) ---------------- */
-// Explorer 500s are transient server-side — a failed page restarts the whole
-// crawl once before accepting a partial window.
+// The explorer serves DIFFERENT windows on different requests (silent
+// truncation that survives per-page refetch: a short page 2 with null
+// next_page_params looks complete). Repeat the full crawl until two
+// consecutive attempts agree on total count + oldest row hash, then trust it.
 async function bsTransfersPages(addr,onPage){
-  for(let attempt=1;attempt<=2;attempt++){
+  let prev=null,best=null;
+  for(let attempt=1;attempt<=4;attempt++){
+    if(attempt>1){onPage(-1,0);await delay(2000);}   // 'verifying…' marker
     const r=await crawlOnce(addr,onPage);
-    if(!r.windowed)return r;                                  // full history read
-    if(attempt===1&&r.failed){onPage(-1,0);await delay(2500);continue;} // hiccup → restart
-    return r;                                                 // capped but consistent
+    if(!best||r.rows.length>best.rows.length)best=r;
+    const last=r.rows.length?String(r.rows[r.rows.length-1].transaction_hash||""):"";
+    const key=r.rows.length+"|"+last+"|"+(r.windowed?"w":"c");
+    if(prev&&key===prev.key)return r;                 // stable across attempts
+    prev={key};
   }
-  return{rows:[],windowed:true,failed:false};
+  return best;
 }
 async function crawlOnce(addr,onPage){
   let page=1,next=null,rows=[],failed=false;
@@ -476,7 +482,7 @@ function pnlRun(){
   $("pnlFine").textContent="";
   (async()=>{
     try{
-      const {rows,windowed}=await bsTransfersPages(a,(p,n)=>{if(a!==ADDR)return;if(p===-1){$("pnlStat").textContent="explorer hiccup — restarting scan…";return;}$("pnlStat").textContent="scanning history… page "+p+" · "+n+" transfers read so far";});
+      const {rows,windowed}=await bsTransfersPages(a,(p,n)=>{if(a!==ADDR)return;if(p===-1){$("pnlStat").textContent="verifying history — attempt "+(window.__pnlAttempt=(window.__pnlAttempt||1)+1)+"…";return;}$("pnlStat").textContent="scanning history… page "+p+" · "+n+" transfers read so far";});
       if(a!==ADDR)return;
       const {book,stats}=classifyHistory(rows,a);
       pnlDone={book,stats,windowed,transfers:rows.length};
