@@ -420,20 +420,24 @@ function classifyHistory(legs,addr){
       const inTok=ins.filter(l=>!(STABLES.has(l.token.symbol)||l.token.symbol==="WETH"));
       const outTok=outs.filter(l=>!(STABLES.has(l.token.symbol)||l.token.symbol==="WETH"));
       const inVal=inStable.reduce((s,l)=>s+legVal(l),0),outVal=outStable.reduce((s,l)=>s+legVal(l),0);
-      // Any group that moves a non-stable token one way and stables the other way
-      // is a buy or sell, even if the stable leg counterparty is a router/settlement
-      // contract (the net stable flow is what matters).
-      if(outTok.length&&inStable.length&&!inTok.length){ // SELL
-        const proceeds=inVal;
-        for(const l of outTok){
-          const k=tokKey(l);if(!book[k])book[k]=newBook(l);
-          sellTok(book[k],legQty(l),proceeds/(outTok.length||1),l);
-        }
-      }else if(inTok.length&&outStable.length&&!outTok.length){ // BUY
-        const cost=outVal;
-        for(const l of inTok){
-          const k=tokKey(l);if(!book[k])book[k]=newBook(l);
-          buyTok(book[k],legQty(l),cost/(inTok.length||1),l);
+      // Trade = any group that moves a non-stable token one direction and a
+      // stable (any direction). The counterparty can be a router/settlement
+      // contract; only the token types and net flow matter.
+      const hasNonStableMove=(inTok.length+outTok.length)>0;
+      const hasStableMove=(inStable.length+outStable.length)>0;
+      if(hasNonStableMove&&hasStableMove){
+        if(outTok.length){ // net sell of the non-stable
+          const proceeds=inVal||outVal; // whichever side has value
+          for(const l of outTok){
+            const k=tokKey(l);if(!book[k])book[k]=newBook(l);
+            sellTok(book[k],legQty(l),proceeds/(outTok.length||1),l);
+          }
+        }else if(inTok.length){ // net buy
+          const cost=outVal||inVal;
+          for(const l of inTok){
+            const k=tokKey(l);if(!book[k])book[k]=newBook(l);
+            buyTok(book[k],legQty(l),cost/(inTok.length||1),l);
+          }
         }
       }else if(outTok.length&&inTok.length){stats.swaps++;}
       else stats.unclassified++;
