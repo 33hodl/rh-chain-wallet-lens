@@ -98,7 +98,7 @@ const WETH_CA="0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
 const BALANCEOF="0x70a08231";
 const HEX40=/^0x[a-fA-F0-9]{40}$/;
 const STABLES=new Set(["USDG","USDC","USDB","USDE","WUSDG","USDG0","syrupUSDG"]);
-let ADDR="", ROWS=[], timer=null, sortKey="value", sortAsc=false;
+let ADDR="", ROWS=[], timer=null, sortKey="value", sortAsc=false, lastAddr="";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -144,8 +144,10 @@ async function dsBatch(cas,concur=6){
   return out;
 }
 
+function resetUI(){$("net").textContent="—";$("net").className="v";$("cnt").textContent="—";$("eth").textContent="—";$("chg").textContent="—";$("chg").className="v sm";$("rows").innerHTML='<tr><td colspan="8" class="loading">loading…</td></tr>';}
 async function load(){
   if(!ADDR)return;
+  if(lastAddr!==ADDR){resetUI();lastAddr=ADDR;ROWS=[];}
   setStatus("loading balances…");
   try{
     const balances=(await bsTokenBalances(ADDR)).filter(b=>parseInt(b.value||"0",10)>0);
